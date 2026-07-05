@@ -1,107 +1,246 @@
 ---
 title: Padrão de Endereçamento IPv6 - SGT
-description: Documentação oficial da arquitetura de sub-redes IPv6 (Zero-Trust) para a infraestrutura da Sousa Global Technologies.
-version: 1.2.0
+description: Documentação oficial da arquitetura de endereçamento IPv6 (Zero-Trust) para a infraestrutura da Sousa Global Technologies, do prefixo de tenant ao Interface ID.
+version: 1.3.0
 ---
 
 # Padrão de Endereçamento IPv6 SGT
 
-Esta documentação define a taxonomia oficial de endereçamento IPv6 privado (ULA - *Unique Local Address*) para as redes da Sousa Global Technologies (SGT). A arquitetura é construída para isolamento estrito de *tenants* (clientes) e microsegmentação de microsserviços.
+Esta documentação define a taxonomia oficial de endereçamento IPv6 privado (ULA — *Unique Local Address*) para as redes da Sousa Global Technologies (SGT). A arquitetura foi desenhada para **isolamento estrito de tenants (clientes)**, microsegmentação Zero-Trust de microsserviços e escalabilidade voltada a ambientes de Inteligência Artificial e sistemas nativos de alta performance.
 
-## 1. O Prefixo Global /48 (Tenancy e Isolamento de Cliente)
+A partir da versão 1.3.0, o padrão cobre a **cadeia completa dos 128 bits**: do prefixo global de tenant (`/48`), passando pela taxonomia de sub-rede (`/64`), até a convenção de Interface ID (últimos 64 bits).
 
-Conforme a RFC 4193, endereços ULA utilizam o bloco `fd00::/8`, seguido por um **Global ID de 40 bits** gerado de forma pseudoaleatória.
-Na SGT, **cada Global ID representa um Tenant (Cliente) ou uma Unidade de Negócio isolada.**
+## Anatomia do Endereço (128 bits)
 
-*   **Regra de Ouro:** Nunca crie um Global ID sequencial ou estético. Use algoritmos de hash para gerar o `/48` para garantir que a rede da SGT nunca colida com a rede de um cliente em fechamentos de VPN (site-to-site).
+Todo endereço obedece à seguinte estratificação:
 
-**Exemplo de Tabela de Tenants:**
-*   `fd9a:3b21:8c77::/48` -> Tenant: SGT (Infraestrutura Interna)
-*   `fde4:99a1:b2c3::/48` -> Tenant: Plataforma Solaria (HealthTech)
-*   `fd11:aa22:bb33::/48` -> Tenant: Cliente Externo A
+```text
+| fd | Global ID (40 bits) | Subnet ID (16 bits) | Interface ID (64 bits) |
+|<------- /48 (Tenant) ---->|<---- /64 (Rede) --->|<------ Host --------->|
+      §RFC 4193 (ULA)         N1 | N2 | N3 | N4        Ver seção Interface ID
+```
 
-## 2. Estrutura do Subnet ID (Nibbles N1 a N4)
+| Bloco | Bits | Escopo | Governança |
+| :--- | :--- | :--- | :--- |
+| `fd` + Global ID | 48 | **Tenant / Site** | Um `/48` por tenant. Global ID pseudoaleatório. |
+| Subnet ID | 16 | **Rede lógica** | Nibbles N1–N4 (taxonomia SGT). |
+| Interface ID | 64 | **Host** | Atribuição manual semântica em tiers de servidor. |
 
-Dentro do `/48` do Tenant, organizamos os 16 bits seguintes em 4 caracteres hexadecimais, definindo as políticas de Zero-Trust e roteamento.
+> **Nota de projeto — por que ULA e não GUA.** A escolha por Unique Local Address (`fd00::/8`) reflete a postura *on-premise first* do SGT: o roteamento para a internet é responsabilidade explícita da camada de Gateway (N3=`0`), com NAT66/NPTv6 ou proxy, nunca uma propriedade emergente do endereçamento. Isso mantém as redes internas não-roteáveis por padrão — coerente com Zero-Trust e com requisitos de air-gap contratual em Defesa/GovTech.
+
+---
+
+## Camada 0 — Tenant / Site (`/48`)
+
+O eixo de tenancy **não vive dentro do Subnet ID**. Ele é o próprio prefixo `/48`, conforme a RFC 4193. Na SGT, **cada Global ID de 40 bits representa um Tenant (cliente), site físico ou unidade de negócio isolada**, e reutiliza integralmente a taxonomia N1–N4 abaixo dele.
+
+Isso resolve, por construção, o requisito de isolamento por cliente (soberania de dados, air-gap por contrato) sem consumir um único bit da taxonomia funcional.
 
 **Formato:**
-`[Prefixo do Tenant /48] : [ N1 | N2 | N3 | N4 ] :: /64`
+`fd[GG:GGGG:GGGG]::/48`
 
-### N1: Ambiente (Ciclo de Vida)
-Define a política de isolamento duro. Um ambiente nunca se comunica diretamente com outro.
+| Vertical / Tenant | Exemplo de alocação `/48` | Observação |
+| :--- | :--- | :--- |
+| SGT Core (infraestrutura própria) | `fd9a:3b21:8c77::/48` | Rede-mãe corporativa. |
+| Tenant GovTech "A" | `fd3e:7c11:0a45::/48` | Isolável / air-gap. |
+| Tenant Defense "B" | `fd91:44a2:e0d8::/48` | Soberania de dados. |
+| Tenant HealthTech (Solaria) | `fde4:99a1:b2c3::/48` | Escopo LGPD/ANVISA. |
+| Cliente Externo A | `fd11:aa22:bb33::/48` | Isolamento contratual. |
+
+> **Regra de Ouro — Global ID é aleatório, nunca estético nem sequencial.** Os 40 bits do Global ID **devem** ser gerados de forma pseudoaleatória (RFC 4193 §3.2.2: timestamp NTP de 64 bits + EUI-64 → SHA-1 → 40 bits menos significativos), ou por qualquer CSPRNG equivalente. Prefixos "bonitos" ou sequenciais (`fd00:0000:0001`, `fd00:0000:0002`) violam o padrão: elevam drasticamente a probabilidade de colisão no dia em que duas redes SGT — ou uma rede SGT e a de um cliente — precisarem se enxergar (VPN site-to-site, fusão, aquisição, DR cruzado). Todos os valores neste documento são ilustrativos e **presumem-se gerados por esse processo**.
+
+Gerador de referência (uso pontual, fora de hot path):
+
+```bash
+# Gera um Global ID de 40 bits conforme espírito da RFC 4193 §3.2.2.
+python3 - <<'PY'
+import secrets
+gid = secrets.token_hex(5)  # 40 bits
+print(f"fd{gid[:2]}:{gid[2:6]}:{gid[6:10]}::/48")
+PY
+```
+
+---
+
+## Camada 1 — Subnet ID (`/64`)
+
+Dentro do `/48` do tenant, a organização lógica ocorre nos 16 bits do Subnet ID, divididos em 4 nibbles (N1 a N4). O princípio de projeto é **um eixo semântico por nibble de posição fixa**, para que uma regra de firewall consiga casar função de serviço inspecionando um único caractere hexadecimal, sem máscaras exóticas.
+
+**Formato:**
+`[Prefixo /48 do Tenant] : [ N1 | N2 | N3 | N4 ] :: /64`
+
+### N1: Ambiente (Ciclo de Vida) — *nibble mais significativo*
+
+Define a **política de isolamento duro**. Como regra Zero-Trust, um ambiente nunca se comunica diretamente com outro; qualquer promoção de artefato entre ambientes atravessa gateways/pipelines explícitos, jamais a rede.
 
 | Hex | Ambiente | Descrição |
 | :--- | :--- | :--- |
-| `1` | **PROD** | Produção. Tráfego real e dados sensíveis. |
-| `2` | **STG** | Homologação (Staging). Espelho de produção. |
-| `3` | **DEV** | Desenvolvimento. |
+| `1` | **PROD** | Produção. Tráfego real, dados sensíveis e instâncias estáveis. |
+| `2` | **STG** | Homologação (Staging). Espelho do ambiente de produção. |
+| `3` | **DEV** | Desenvolvimento. Testes de novos artefatos e ambientes efêmeros. |
 | `4` | **DR** | Disaster Recovery / Cold Standby. |
 
+> **Nota de decisão — Ambiente é MSB por escolha, não por acaso.** Colocar Ambiente como nibble mais significativo permite sumarizar **todo o PROD de um tenant** num único prefixo `/52` (`[/48]:1000::/52`), tornando trivial a regra-mãe "PROD não origina tráfego para DEV/STG". O custo consciente é que a Localidade (N2) **não agrega em prefixo contíguo**: "todo o On-Premises" aparece espalhado como `x1xx` com `x` variando por ambiente. Aceitamos esse custo porque a fronteira dura entre ambientes vale mais, no modelo SGT, do que a agregação de rota por localidade física. Ver a nota em N2.
+
 ### N2: Localidade (Topologia Física)
-Discrimina a localização do processamento. *(Nota: Devido ao N1 ser mais significativo, este nível define escopo físico, mas não serve para sumarização BGP de data centers inteiros).*
+
+Discrimina a localização do processamento. **Este campo é um discriminador de política de firewall, não um eixo de agregação de rota.**
 
 | Hex | Localidade | Descrição |
 | :--- | :--- | :--- |
-| `1` | **On-Premises** | Servidores físicos locais (Bare-Metal). |
-| `2` | **Public Cloud** | Provedor de nuvem principal (AWS, GCP, etc). |
-| `3` | **POP Secundário** | Provedores de apoio, VPS ou Edge nodes. |
-| `4` | **VPN / Dial-up** | Redes de acesso remoto. |
+| `1` | **On-Premises** | Servidores físicos locais (Bare-Metal / k3s). |
+| `2` | **Public Cloud** | Provedor de nuvem principal (AWS, GCP, etc.). |
+| `3` | **POP Secundário** | Provedores de apoio, VPS, edge nodes ou terceiro provedor. |
+| `4` | **VPN / Remote** | Redes de acesso remoto e túneis de desenvolvedores. |
+
+> **Nota de decisão — Localidade não faz "roteamento macro".** Pela posição escolhida (após N1), este campo não produz prefixos agregáveis por site, e portanto não serve para sumarização BGP de data centers inteiros. Seu papel é ser um seletor de política: por exemplo, "backend em Cloud (`x2` + N3=`2`) só aceita conexão de agentes vindos da mesma nuvem", ou "management (N3=`b`) só é alcançável a partir de `x4` VPN". Se surgir a necessidade de anunciar blocos por fronteira física (BGP interno, múltiplos sites), a solução correta **não** é reordenar os nibbles — é usar a Camada 0 (um `/48` distinto por site), que já agrega naturalmente.
 
 ### N3: Camada / Tier (Perfil de Tráfego e Firewall)
-Define a função do serviço e a matriz de comunicação permitida.
+
+O núcleo das regras de firewall. Define a função do serviço e a **matriz de comunicação permitida**.
 
 | Hex | Camada | Tráfego e Função |
 | :--- | :--- | :--- |
-| `0` | **Gateway** | Recebe tráfego externo/internet (Proxies, Load Balancers). |
-| `1` | **Frontend / UI** | Servidores de assets estáticos. |
+| `0` | **Gateway / Ingress** | Recebe tráfego externo/internet (Proxies, Load Balancers, borda pública). |
+| `1` | **Frontend / UI** | Servidores de assets estáticos e renderização de interface. |
 | `2` | **Backend Core** | APIs e camada de regras de negócios (Rust, C++, Java). |
-| `3` | **Bancos de Dados** | Isolamento máximo (PostgreSQL, ScyllaDB, etc.). |
+| `3` | **Bancos de Dados** | Isolamento máximo (PostgreSQL, ScyllaDB, DB2, etc.). |
 | `4` | **Mensageria** | Barramento de eventos (Kafka, RabbitMQ, etc.). |
 | `5` | **Batch Processing** | Processos em background e workers genéricos. |
-| `6` | **IA - Inferência** | Execução de modelos locais e workloads de GPU (C++/CUDA). |
-| `7` | **IA - Agentes** | Serviços de IA e orquestração. |
-| `8` | **Data Science** | Redes exclusivas para treinamento e pipelines de dados (Python). |
-| `9` | **Cache / KV** | Armazenamento de alta velocidade (Redis, Memcached). |
-| `a` | **Telemetria** | Observabilidade *read-only* (Prometheus, Logs). |
-| `b` | **Management** | Acesso administrativo e *Control Plane* (SSH, Bastion, Kubernetes API). |
-| `f` | **Outros** | Serviços não classificados (Requer revisão periódica). |
+| `6` | **IA - Inferência** | Execução de modelos locais, workloads de GPU, aceleração de hardware (C++/CUDA, Triton/TensorRT). |
+| `7` | **IA - Agentes** | Serviços de IA, orquestração e aplicações que consultam a inferência. |
+| `8` | **Data Science** | Redes exclusivas para treinamento, modelagem, ETL e pipelines de dados (Python). |
+| `9` | **Cache / KV** | Armazenamento temporário de alta velocidade (Redis, Memcached). |
+| `a` | **Telemetria** | Observabilidade *read-only*, pull de métricas e logs (Prometheus, Grafana, OTel collectors). |
+| `b` | **Management Plane** | Acesso administrativo de alto privilégio e *control plane* (SSH/bastion, Vault, Kubernetes API, orquestração de cluster). |
+| `f` | **Outros** | Serviços legados ou não classificados. **Requer revisão periódica** para reclassificação. |
+
+> **Nota de decisão — separação Telemetria (`a`) × Management (`b`).** Os dois perfis têm níveis de confiança opostos: telemetria é pull *read-only* de baixo privilégio; management é acesso administrativo de altíssimo privilégio (control plane, SSH, API do Kubernetes). Mantê-los em tiers distintos permite que a regra de firewall os trate de forma radicalmente diferente: `a` pode ser alcançado de forma ampla por coletores; `b` só é alcançável a partir de N2=`4` (VPN) e de um conjunto mínimo de origens.
+
+> **Nota de nomenclatura — "Edge" foi eliminado.** Na v1.1.0 o termo aparecia ambíguo em N2 (localidade) e N3 (camada). Renomeamos para **POP Secundário** (N2=`3`) e **Gateway / Ingress** (N3=`0`), eliminando a colisão.
 
 ### N4: Cluster ID (Identificação do Nó/Zona)
-Identifica zonas de disponibilidade do mesmo serviço.
+
+Identifica zonas de disponibilidade ou clusters independentes da mesma camada.
 
 | Hex | ID | Descrição |
 | :--- | :--- | :--- |
 | `0` | **Principal** | Cluster Primário / Zona A. |
 | `1` | **Secundário** | Cluster Secundário / Zona B (Alta disponibilidade). |
-| `f` | **Routing** | Tráfego interno de roteadores de interligação. |
+| `2`-`e` | **Custom** | Segmentações arbitrárias específicas do serviço (ver nota de escala). |
+| `f` | **Routing** | Tráfego interno de roteadores e gateways de interligação. |
+
+> **Nota de escala — N4 é o gargalo futuro.** N4 acumula dois papéis que às vezes competem: *zona de disponibilidade* (A/B) e *segmentação custom* de múltiplos clusters na mesma camada. Com 16 valores (menos `0`, `1`, `f` reservados → 13 úteis), um tier que cresça para dezenas de clusters independentes esgota o nibble. Estratégia de expansão recomendada quando isso se aproximar: **não** roubar bits de N3; em vez disso, promover a distinção de cluster para o Interface ID (bloco de nós de infra) ou alocar um `/60` dedicado dentro do tenant. Documentar a escolha no momento em que o 13º cluster de uma camada for provisionado.
 
 ---
 
-## 3. Padrão do Interface ID (Últimos 64 bits)
+## Camada 2 — Interface ID (`/128`, últimos 64 bits)
 
-Para manter a previsibilidade no gerenciamento Zero-Trust, o uso de SLAAC (configuração automática) ou extensões de privacidade é **proibido** em instâncias de servidores.
+Em tiers de servidor (N3 = `0`–`b`), a SGT adota **atribuição manual e semântica** do Interface ID (*Vanity IPs*). SLAAC com EUI-64 e *privacy extensions* (RFC 8981) são **proibidos em servidores**: geram endereços imprevisíveis e rotativos, incompatíveis com regras de firewall estáveis, DNS estático e auditoria. Privacy extensions permanecem aceitáveis apenas para clientes efêmeros em N2=`4` (VPN/Remote).
 
-Os últimos 64 bits devem refletir o propósito do IP usando notação hexadecimal estática (*Vanity IPs*):
+### Regras de atribuição
 
-| Final | Uso | Exemplo de Aplicação |
+1. **Bit U/L = 0 (localmente administrado).** Todo IID manual **deve** ter o 7º bit do primeiro octeto zerado, para nunca colidir com endereços derivados de EUI-64 (que têm U/L = 1). Atribuir endereços "baixos" e legíveis (`::10`, `::a3`) já satisfaz isso naturalmente.
+2. **Legibilidade sobre entropia.** Endereços de host devem ser curtos e memorizáveis; a segurança vem da segmentação e do firewall, não da obscuridade do IID.
+3. **Estabilidade.** Endereço de serviço é contrato: entra em DNS interno e em regra de firewall, não muda por reboot.
+
+### Faixas reservadas do Interface ID
+
+| Faixa | Uso | Exemplo |
 | :--- | :--- | :--- |
-| `::1` | **Gateway Padrão (Router)** | O roteador da respectiva sub-rede. |
-| `::10` a `::99` | **Nós de Infraestrutura** | Instâncias estáticas, Master Nodes. Ex: Banco de Dados Nó 1 (`::10`). |
-| `::a0` a `::ff` | **Serviços Anycast / VIPs** | IPs flutuantes (Keepalived, MetalLB). |
-| `::xxxx` | **Dinâmico Seguro** | IPs entregues via DHCPv6 para containers/pods efêmeros. |
+| `::1` | **Gateway/router** da sub-rede | `[/64]::1` |
+| `::2` – `::f` | Infra de rede reservada (VRRP/keepalived first-hop, roles futuros) | `[/64]::2` |
+| `::10` – `::ff` | **Anycast / VIPs** — IPs flutuantes (Keepalived, MetalLB); endpoints-contrato balanceados | `[/64]::10` |
+| `::100` – `::1ff` | **Nós de infra nomeados** — masters, DB primários, bastions (estáticos "vanity") | `[/64]::100` |
+| `::200` – `::ffff` | **Hosts estáticos genéricos** | `[/64]::201` |
+| `::1:0` em diante | **Dinâmico seguro** — DHCPv6 stateful para pods/containers efêmeros | `[/64]::1:23` |
+
+> **Nota de decisão — VIP na faixa baixa, nós nomeados acima.** As duas revisões 1.2.0 divergiam aqui: uma colocava nós físicos no bloco baixo memorável e VIPs acima; a outra o inverso. A v1.3.0 opta por **anycast/VIP na faixa baixa (`::10`–`::ff`)** porque, num modelo Zero-Trust/service-mesh, o cliente liga-se ao *endpoint-contrato* (o VIP), não ao nó físico — logo é o VIP que merece o endereço prime e memorável. Nós físicos nomeados (que também querem legibilidade) ficam logo acima em `::100`–`::1ff`, separados dos hosts genéricos. Isso preserva a intenção de ambas as revisões (VIPs reconhecíveis + nós nomeados legíveis) com fronteiras hex-alinhadas.
+
+> **Anycast para o SGT AI Nucleus.** O endpoint de inferência (Triton) deve ser exposto como VIP anycast na faixa `::10`–`::ff` do respectivo `/64` de IA-Inferência, desacoplando os agentes (N3=`7`) do endereço físico do worker GPU. Migrações de hardware ou adição de um segundo worker (N4=`1`) deixam de exigir reconfiguração dos consumidores.
 
 ---
 
-## Exemplo Completo de Endereçamento
+## Exemplo Completo (decomposição bit a bit)
 
 ```text
-Cenário: Acesso SSH ao Banco de Dados Principal de Saúde da SGT, em Produção, no Servidor Físico.
+Cenário: Banco de Dados de Saúde da SGT, em Produção, no servidor físico on-prem,
+         acessado por SSH a partir do bastion do management plane.
 
-Tenant (SGT):       fd9a:3b21:8c77
-Ambiente (Prod):    1
-Local (On-Prem):    1
-Camada (DB):        3
-Cluster (A):        0
-Interface (Nó 1):   ::10
+Tenant (SGT Core):   fd9a:3b21:8c77
+N1 Ambiente (Prod):  1
+N2 Local (On-Prem):  1
+N3 Camada (DB):      3
+N4 Cluster (Zona A): 0
+Interface (nó infra):::100
 
-IP Completo: fd9a:3b21:8c77:1130::10 / 128
+Endereço do nó DB:   fd9a:3b21:8c77:1130::100 / 128
+
+# A origem do SSH é o bastion, em outro tier (Management Plane):
+Bastion (Prod/VPN):  fd9a:3b21:8c77:14b0::1
+
+# A regra Zero-Trust que habilita este acesso é, portanto, direcional:
+#   ORIGEM  fd9a:3b21:8c77:14b0::/64   (N3=b, Management)
+#   DESTINO fd9a:3b21:8c77:1130::/64   (N3=3, Bancos)   porta 22
+# Nenhum outro tier alcança o DB por SSH.
+```
+
+## Exemplos de Topologia (variados)
+
+Usando o tenant SGT Core `fd9a:3b21:8c77::/48`:
+
+```text
+# 1. Inferência de IA (Produção / On-Prem) — endpoint anycast
+Rede:  fd9a:3b21:8c77:1160::/64
+VIP:   fd9a:3b21:8c77:1160::10        (Triton, anycast)
+Host:  fd9a:3b21:8c77:1160::100       (worker GPU físico, RTX 5070 Ti)
+(N1=1 Prod, N2=1 On-Prem, N3=6 IA-Inferência, N4=0 Principal)
+
+# 2. Agentes de IA acessando a Inferência (Produção / Cloud)
+Rede:  fd9a:3b21:8c77:1270::/64
+(N1=1 Prod, N2=2 Cloud, N3=7 IA-Agentes, N4=0 Principal)
+
+# 3. Pipeline de Treinamento de Dados (Desenvolvimento / On-Prem)
+Rede:  fd9a:3b21:8c77:3180::/64
+(N1=3 Dev, N2=1 On-Prem, N3=8 Data Science, N4=0 Principal)
+
+# 4. Coletor de Métricas Prometheus (Homologação / Cloud) — telemetria read-only
+Rede:  fd9a:3b21:8c77:22a0::/64
+(N1=2 Stg, N2=2 Cloud, N3=a Telemetria, N4=0 Principal)
+
+# 5. Mesmo serviço de inferência, mas de OUTRO tenant (GovTech "A", isolado)
+Rede:  fd3e:7c11:0a45:1160::/64
+(Tenant distinto por /48 — isolamento por construção, mesma taxonomia interna)
+```
+
+---
+
+## Padrões de Sumarização (Zero-Trust)
+
+Prefixos-chave que a taxonomia habilita para regras-mãe de firewall, dentro de um tenant:
+
+| Prefixo | Alcance | Uso típico da regra |
+| :--- | :--- | :--- |
+| `[/48]:1000::/52` | Todo o **PROD** do tenant | "PROD não origina tráfego para DEV/STG." |
+| `[/48]:xxb0::/60` | **Management plane** | "Alcançável somente a partir de N2=4 (VPN)." |
+| `fd..::/48` (por tenant) | **Tenant inteiro** | Isolamento/air-gap por cliente soberano. |
+
+> Observação: a sumarização por N3 isolado (ex.: "todos os DBs de todos os ambientes") não é um prefixo contíguo, por decisão de projeto (Ambiente é MSB). Regras que precisam abranger uma camada através de ambientes devem ser expressas como conjunto de prefixos ou via grupos de objetos do firewall — não via máscara única.
+
+---
+
+## Changelog
+
+**1.3.0** — Unificação das duas revisões 1.2.0 paralelas.
+- **Camada 0**: enquadramento explícito "Global ID = Tenant", "Regra de Ouro" contra IDs sequenciais, tabela de tenants ampliada.
+- **N1**: adicionada a política de isolamento duro explícita ("um ambiente nunca fala com outro").
+- **N2**: adotado "POP Secundário" (cobre edge/VPS/terceiro provedor).
+- **N3**: `0` = "Gateway / Ingress"; `a` = "Telemetria"; `b` inclui Kubernetes API / control plane; `f` marcado para revisão periódica.
+- **N4**: adicionada nota de escala com estratégia de expansão do nibble.
+- **Interface ID**: esquema de faixas reconciliado entre as duas revisões (VIP baixo, nós nomeados em `::100`–`::1ff`, hosts genéricos acima), com nota de decisão; enquadramento "Vanity IPs".
+- **Exemplos**: adicionado o exemplo completo decomposto bit a bit, com a regra Zero-Trust direcional SSH bastion→DB.
+- Preservados da 1.2.0: anatomia dos 128 bits, nota ULA-vs-GUA, gerador de Global ID, regra do bit U/L, citação RFC 8981, seção de sumarização.
+
+**1.2.0** — Tenancy por `/48`, Interface ID formalizado, split Telemetria/Management, eliminação de "Edge".
+
+**1.1.0** — Versão base: taxonomia N1–N4 e exemplos `/64`.
