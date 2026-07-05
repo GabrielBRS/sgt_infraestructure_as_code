@@ -1,12 +1,12 @@
 ---
 title: Padrão de Endereçamento IPv6 - SGT
 description: Documentação oficial da arquitetura de sub-redes IPv6 (Zero-Trust) para a infraestrutura da Sousa Global Technologies.
-version: 1.0.0
+version: 1.1.0
 ---
 
 # Padrão de Endereçamento IPv6 SGT
 
-Esta documentação define a taxonomia oficial de endereçamento IPv6 para as redes privadas da Sousa Global Technologies (SGT). A arquitetura foi desenhada para suportar microsegmentação, segurança Zero-Trust e escalabilidade de microsserviços e inteligência artificial.
+Esta documentação define a taxonomia oficial de endereçamento IPv6 para as redes privadas da Sousa Global Technologies (SGT). A arquitetura foi desenhada para suportar microsegmentação, segurança Zero-Trust e escalabilidade voltada para ambientes de Inteligência Artificial e microsserviços de alta performance.
 
 ## Estrutura do Subnet ID (Nibbles)
 
@@ -48,14 +48,16 @@ O núcleo das regras de firewall. Define a função do serviço e seu nível de 
 | :--- | :--- | :--- |
 | `0` | **Gateway / Edge** | Recebe tráfego externo/internet (Proxies, Load Balancers). |
 | `1` | **Frontend / UI** | Servidores de assets estáticos e renderização de interface. |
-| `2` | **Backend Core** | APIs e camada de regras de negócios. |
+| `2` | **Backend Core** | APIs e camada de regras de negócios (Rust, C++, Java). |
 | `3` | **Bancos de Dados** | Isolamento máximo (PostgreSQL, ScyllaDB, etc.). |
 | `4` | **Mensageria** | Barramento de eventos (Kafka, RabbitMQ, etc.). |
 | `5` | **Batch Processing** | Processos em background e workers genéricos. |
-| `6` | **Machine Learning** | Inferência e treinamento de IA, nós de alta performance/GPU. |
-| `7` | **Data Science** | Pipelines de ETL, workers de dados e ambientes de exploração. |
-| `8` | **Cache / KV** | Armazenamento temporário de alta velocidade (Redis, Memcached). |
-| `f` | **Observabilidade** | Monitoramento, telemetria (Prometheus) e gerenciamento (SSH). |
+| `6` | **IA - Inferência** | Execução de modelos locais, workloads de GPU e aceleração de hardware. |
+| `7` | **IA - Agentes** | Serviços de IA, orquestração e aplicações que consultam a inferência. |
+| `8` | **Data Science** | Redes exclusivas para treinamento, modelagem, ETL e pipelines de dados. |
+| `9` | **Cache / KV** | Armazenamento temporário de alta velocidade (Redis, Memcached). |
+| `a` | **Observabilidade** | Monitoramento, telemetria (Prometheus, Grafana) e gerenciamento (SSH). |
+| `f` | **Outros** | Serviços legados ou não classificados nas categorias anteriores. |
 
 ---
 
@@ -73,21 +75,25 @@ Identifica zonas de disponibilidade ou clusters independentes da mesma camada.
 
 ## Exemplos de Topologia
 
-Abaixo, simulações de geração de rede utilizando o prefixo de exemplo `fdb4:1029:8a7c::/48`:
+Abaixo, simulações de geração de rede utilizando um prefixo de exemplo `fdb4:1029:8a7c::/48`:
 
 ```text
-# 1. Gateway de Produção no Servidor Físico (On-Premises)
-Prefixo: fdb4:1029:8a7c:1100::/64
-(N1=1: Prod, N2=1: On-Prem, N3=0: Gateway, N4=0: Cluster Principal)
-
-# 2. Cluster de Machine Learning de Produção (On-Premises)
+# 1. Cluster Local de Inferência de IA (Produção)
 Prefixo: fdb4:1029:8a7c:1160::/64
-(N1=1: Prod, N2=1: On-Prem, N3=6: ML, N4=0: Cluster Principal)
+(N1=1: Prod, N2=1: On-Prem, N3=6: IA-Inferência, N4=0: Cluster Principal)
 
-# 3. Pipeline de Data Science em Desenvolvimento (Nuvem Pública)
-Prefixo: fdb4:1029:8a7c:3270::/64
-(N1=3: Dev, N2=2: Cloud, N3=7: Data Science, N4=0: Cluster Principal)
+# 2. API de Agentes de IA acessando a Inferência (Produção / Cloud)
+Prefixo: fdb4:1029:8a7c:1270::/64
+(N1=1: Prod, N2=2: Cloud, N3=7: IA-Agentes, N4=0: Cluster Principal)
 
-# 4. Banco de Dados Principal de Homologação (Nuvem Pública)
-Prefixo: fdb4:1029:8a7c:2230::/64
-(N1=2: Stg, N2=2: Cloud, N3=3: DB, N4=0: Cluster Principal)
+# 3. Pipeline de Treinamento de Dados em Python (Desenvolvimento / On-Prem)
+Prefixo: fdb4:1029:8a7c:3180::/64
+(N1=3: Dev, N2=1: On-Prem, N3=8: Data Science, N4=0: Cluster Principal)
+
+# 4. Servidor de Monitoramento Prometheus (Homologação / Cloud)
+Prefixo: fdb4:1029:8a7c:22a0::/64
+(N1=2: Stg, N2=2: Cloud, N3=a: Observabilidade, N4=0: Cluster Principal)
+
+# 5. Serviço não classificado (Produção / Cloud)
+Prefixo: fdb4:1029:8a7c:12f0::/64
+(N1=1: Prod, N2=2: Cloud, N3=f: Outros, N4=0: Cluster Principal)
